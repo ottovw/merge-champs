@@ -1,0 +1,17 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Run Merge Champ (Sample Data)",
+			"type": "shell",
+			"command": "C:/Users/ottovw/AppData/Local/Programs/Python/Python312/python.exe",
+			"args": [
+				"main.py",
+				"--sample"
+			],
+			"group": "build",
+			"isBackground": false,
+			"problemMatcher": []
+		}
+	]
+}
