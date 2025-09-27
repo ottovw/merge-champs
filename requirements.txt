@@ -1,5 +1,4 @@
-pandas==2.1.4
 requests==2.31.0
 python-gitlab==4.2.0
-PyGithub==2.1.1
 python-dotenv==1.0.0
+pytest==8.2.2

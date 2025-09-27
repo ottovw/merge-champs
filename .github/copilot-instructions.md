@@ -8,7 +8,7 @@ This is a Python terminal application for tracking merge request statistics. The
 
 1. **Visual Appeal**: All output should be modern, colorful, and encouraging. Use extensive emojis, friendly colors, and motivational messaging. The terminal output uses a 2-column layout for weekly vs monthly comparisons.
 
-2. **Data Sources**: Support both GitLab and GitHub APIs for collecting merge request data.
+2. **Data Sources**: Collect merge request data exclusively from GitLab APIs.
 
 3. **Output Types**: 
    - Terminal-based statistics display (primary feature)
@@ -44,3 +44,5 @@ This is a Python terminal application for tracking merge request statistics. The
    - Motivational messaging at the end
 
 9. **Sample Data**: Support `--sample` flag for demonstration without requiring API configuration.
+
+10. **Command Execution**: When running Python tooling or tests from the terminal, always invoke the interpreter using the `python` command (for example, `python -m pytest`).

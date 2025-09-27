@@ -1,17 +1,11 @@
 #!/usr/bin/env python3
 """
 Merge Champ - Main Application
-A fun and engaging application to track and visualize merge request stat        # Generate motivational message based on combined stats
-        motivational_messages = config.get_motivational_messages()
-        total_combined = weekly_stats['total_mrs'] + monthly_stats['total_mrs']
-        if total_combined >= 35:
-            message = motivational_messages['high_activity'][0]
-        elif total_combined >= 15:
-            message = motivational_messages['medium_activity'][0]
-        else:
-            message = motivational_messages['encouraging'][0]e:
+A fun and engaging application to track and visualize merge request statistics.
+
+Usage:
     python main.py [--sample]
-    
+
 Options:
     --sample        Use sample data for demonstration
 """
@@ -21,13 +15,24 @@ import sys
 import os
 import logging
 from datetime import datetime
+from typing import Dict, Any, Optional
 
 # Add src directory to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
 
 from src.config import config
 from src.data_collector import DataCollector
-from src.utils import create_sample_data, calculate_team_stats, get_friendly_username, get_week_display_text, get_month_display_text
+from src.output_channels import ConsoleOutputStrategy, TeamsOutputStrategy
+from src.utils import (
+    create_sample_data,
+    calculate_team_stats,
+    get_week_display_text,
+    get_month_display_text,
+    get_week_date_range,
+    get_month_date_range,
+    MergeCountAggregate,
+    SAMPLE_TEAM_MEMBERS,
+)
 
 # Configure logging
 logging.basicConfig(
@@ -41,136 +46,217 @@ def main():
     """Main application entry point."""
     # Parse command line arguments
     parser = argparse.ArgumentParser(description='Merge Champ - Track team merge request statistics')
-    parser.add_argument('--sample', action='store_true', 
-                       help='Use sample data for demonstration')
+    parser.add_argument(
+        '--sample',
+        action='store_true',
+        help='Use sample data for demonstration'
+    )
+    parser.add_argument(
+        '--week-offset',
+        type=int,
+        default=0,
+        help='Number of weeks to look back (0 = current week). Ignored if --week is provided.'
+    )
+    parser.add_argument(
+        '--week',
+        type=str,
+        help='ISO date (YYYY-MM-DD) representing any day within the desired week.'
+    )
+    parser.add_argument(
+        '--month-offset',
+        type=int,
+        default=0,
+        help='Number of months to look back (0 = current month). Ignored if --month is provided.'
+    )
+    parser.add_argument(
+        '--month',
+        type=str,
+        help='Target month in YYYY-MM format.'
+    )
+    parser.add_argument(
+        '--publish-teams',
+        action='store_true',
+        help='Send the summary to Microsoft Teams when configured.'
+    )
+    parser.add_argument(
+        '--publish-teams-debug',
+        action='store_true',
+        help='Print the Microsoft Teams request body instead of sending it.'
+    )
+    parser.add_argument(
+        '--weighted',
+        action='store_true',
+        help='Use weighted merge request counts (defaults to raw).'
+    )
     args = parser.parse_args()
     
     print("🏆 Welcome to Merge Champ! 🏆")
     print("Generating team merge request statistics...\n")
     
     try:
+        # Determine reporting windows
+        week_reference: Optional[datetime] = None
+        week_offset = args.week_offset if args.week_offset >= 0 else 0
+        if args.week_offset < 0:
+            logger.warning("Week offset cannot be negative; defaulting to 0")
+        if args.week and args.week_offset:
+            logger.info("Ignoring --week-offset because --week was provided")
+
+        if args.week:
+            try:
+                week_reference = datetime.strptime(args.week, "%Y-%m-%d")
+            except ValueError:
+                print("❌ Invalid value for --week. Use YYYY-MM-DD format.")
+                return 1
+            week_offset = 0
+
+        month_reference: Optional[datetime] = None
+        month_offset = args.month_offset if args.month_offset >= 0 else 0
+        if args.month_offset < 0:
+            logger.warning("Month offset cannot be negative; defaulting to 0")
+        if args.month and args.month_offset:
+            logger.info("Ignoring --month-offset because --month was provided")
+
+        if args.month:
+            try:
+                month_reference = datetime.strptime(args.month, "%Y-%m")
+            except ValueError:
+                print("❌ Invalid value for --month. Use YYYY-MM format.")
+                return 1
+            month_offset = 0
+
+        week_start, week_end = get_week_date_range(offset_weeks=week_offset, reference=week_reference)
+        month_start, month_end = get_month_date_range(offset_months=month_offset, reference=month_reference)
+        explicit_week = bool(args.week) or week_offset != 0
+        explicit_month = bool(args.month) or month_offset != 0
+        month_only = explicit_month and not explicit_week
+
+        count_mode = 'weighted' if args.weighted else 'raw'
+        if count_mode == 'weighted' and not config.mr_weight_rules:
+            logger.info("Weighted count mode selected but no MR_WEIGHT_RULES configured; values will mirror raw counts.")
+            count_mode = 'raw'
+        weighting_enabled = count_mode == 'weighted'
+
+        if config.mr_weight_rules:
+            rule_summary = ", ".join(f"≤{threshold}:{weight}" for threshold, weight in config.mr_weight_rules)
+        else:
+            rule_summary = "none configured"
+        logger.info("Using %s merge request counts (weight rules: %s)", count_mode, rule_summary)
+
         if args.sample:
             # Use sample data for demonstration
-            print("📊 Using sample data for demonstration...")
-            sample_data = create_sample_data()
-            weekly_data = sample_data['weekly']
-            monthly_data = sample_data['monthly']
+            week_seed_component = int(week_start.strftime('%Y%W'))
+            month_seed_component = int(month_start.strftime('%Y%m'))
+            sample_seed = week_seed_component * 1000 + month_seed_component
+            logger.info("Generating sample data for demonstration with seed %s", sample_seed)
+            sample_team_members = SAMPLE_TEAM_MEMBERS
+            sample_data = create_sample_data(seed=sample_seed, team_members=sample_team_members)
+            if month_only:
+                weekly_aggregate = MergeCountAggregate.empty(sample_team_members)
+            else:
+                weekly_aggregate = sample_data['weekly'].ensure_members(sample_team_members)
+            monthly_aggregate = sample_data['monthly'].ensure_members(sample_team_members)
         else:
             # Collect real data
             data_collector = DataCollector()
             
             if not data_collector.has_valid_configuration():
                 print("⚠️  No valid API configuration found!")
-                print("Either configure your API tokens and repository, or use --sample for demo data.")
+                print("Either configure your GitLab token and project/group, or use --sample for demo data.")
                 print("\nTo configure:")
                 print("1. Copy .env.example to .env")
-                print("2. Add your API tokens and repository information")
+                print("2. Add your GitLab token and project/group information")
                 print("3. List your team members")
                 print("\nOr run with --sample to see a demonstration")
                 return
             
             print("🔄 Collecting merge request data...")
-            weekly_data = data_collector.get_weekly_data()
-            monthly_data = data_collector.get_monthly_data()
-        
-        # Display results in 2-column layout
-        COLUMN_WIDTH = 39
-        TOTAL_WIDTH = COLUMN_WIDTH * 2 + 1  # +1 for the separator
-        
-        print("\n" + "=" * TOTAL_WIDTH)
-        print("🎉 MERGE CHAMP RESULTS 🎉".center(TOTAL_WIDTH))
-        print("=" * TOTAL_WIDTH)
-        
-        # Create 2-column layout
-        weekly_stats = calculate_team_stats(weekly_data)
-        monthly_stats = calculate_team_stats(monthly_data)
-        
-        def format_line(left_text, right_text):
-            """Format a line with consistent column widths and separator."""
-            left_padded = left_text[:COLUMN_WIDTH].ljust(COLUMN_WIDTH)
-            # Add padding to the right column for better visual spacing
-            right_padded = (" " + right_text)[:COLUMN_WIDTH].ljust(COLUMN_WIDTH)
-            return f"{left_padded}│{right_padded}"
-        
-        def format_centered_line(left_text, right_text):
-            """Format a line with centered text in each column."""
-            left_centered = left_text[:COLUMN_WIDTH].center(COLUMN_WIDTH)
-            right_centered = right_text[:COLUMN_WIDTH].center(COLUMN_WIDTH)
-            return f"{left_centered}│{right_centered}"
-        
-        def format_full_line(middle_char='┼'):
-            """Format a full line with centered headers and separator."""
-            return "─" * (COLUMN_WIDTH+1) + middle_char + "─" * COLUMN_WIDTH
-        
-        # Column headers
-        week_header = get_week_display_text()
-        month_header = get_month_display_text()
-        print(format_centered_line(week_header, month_header))
-        print(format_full_line())
-        
-        # Stats summary
-        print(format_centered_line(f"📊 Total MRs: {weekly_stats['total_mrs']}", f"📊 Total MRs: {monthly_stats['total_mrs']}"))
-        print(format_centered_line(f"👥 Participation: {weekly_stats['participation_rate']}%", f"👥 Participation: {monthly_stats['participation_rate']}%"))
-        
-        # Top contributor
-        weekly_top = get_friendly_username(weekly_stats['top_contributor'])
-        monthly_top = get_friendly_username(monthly_stats['top_contributor'])
-        print(format_centered_line(f"🏆 {weekly_top[:30]}", f"🏆 {monthly_top[:30]}"))
-        #print(format_centered_line(f"({weekly_stats['top_contributor_count']} MRs)", f"({monthly_stats['top_contributor_count']} MRs)"))
-        
-        print(format_full_line())
-        
-        # Team breakdown headers
-        print(format_centered_line("👥 TEAM BREAKDOWN", "👥 TEAM BREAKDOWN"))
-        print(format_full_line())
-        
-        # Sort data for both columns
-        sorted_weekly = sorted(weekly_data.items(), key=lambda x: x[1], reverse=True)
-        sorted_monthly = sorted(monthly_data.items(), key=lambda x: x[1], reverse=True)
-        
-        # Get emojis for rankings
-        emojis = ["🏆", "🥈", "🥉", "⭐", "🌟", "✨", "💫", "🌺", "🎸", "🎪", "🎭", "🎲"]
-        
-        # Display team breakdown side by side
-        max_lines = max(len(sorted_weekly), len(sorted_monthly))
-        
-        for i in range(max_lines):
-            # Weekly column
-            if i < len(sorted_weekly):
-                username, count = sorted_weekly[i]
-                emoji = emojis[i] if i < len(emojis) else "⭐"
-                friendly_name = get_friendly_username(username)
-                weekly_text = f"{emoji} {friendly_name[:28]}: {count}"
+            if month_only:
+                weekly_aggregate = MergeCountAggregate.empty(config.team_members)
             else:
-                weekly_text = ""
-            
-            # Monthly column  
-            if i < len(sorted_monthly):
-                username, count = sorted_monthly[i]
-                emoji = emojis[i] if i < len(emojis) else "⭐"
-                friendly_name = get_friendly_username(username)
-                monthly_text = f"{emoji} {friendly_name[:28]}: {count}"
-            else:
-                monthly_text = ""
-            
-            print(format_line(weekly_text, monthly_text))
-        
-        print(format_full_line("┴"))
-        
-        # Motivational message
+                weekly_aggregate = data_collector.get_weekly_data(
+                    offset_weeks=week_offset,
+                    reference=week_reference,
+                    enable_weighting=weighting_enabled,
+                )
+            monthly_aggregate = data_collector.get_monthly_data(
+                offset_months=month_offset,
+                reference=month_reference,
+                enable_weighting=weighting_enabled,
+            )
+
+        if month_only:
+            weekly_counts = {}
+            weekly_stats = calculate_team_stats(weekly_counts)
+            sorted_weekly = []
+        else:
+            weekly_counts = weekly_aggregate.for_mode(count_mode)
+            weekly_stats = calculate_team_stats(weekly_counts)
+            sorted_weekly = sorted(weekly_counts.items(), key=lambda x: x[1], reverse=True)
+        monthly_counts = monthly_aggregate.for_mode(count_mode)
+        monthly_stats = calculate_team_stats(monthly_counts)
+        sorted_monthly = sorted(monthly_counts.items(), key=lambda x: x[1], reverse=True)
+
         motivational_messages = config.get_motivational_messages()
         if monthly_stats['total_mrs'] >= 20:
-            message = motivational_messages['high_activity'][0]
+            motivational_message = motivational_messages['high_activity'][0]
         elif monthly_stats['total_mrs'] >= 5:
-            message = motivational_messages['medium_activity'][0]
+            motivational_message = motivational_messages['medium_activity'][0]
         else:
-            message = motivational_messages['encouraging'][0]
-        
-        print(f"\n💬 {message}")
+            motivational_message = motivational_messages['encouraging'][0]
 
-        print("\n* These numbers make no judgement on quality. The goal is to")
-        print("  encourage working in small batches and frequent contributions.")
-        print("  Only MRs from gitlab.com are included and are counted on create.")
+        week_header = get_week_display_text(week_start, week_end)
+        month_header = get_month_display_text(month_start)
+
+        context = {
+            "sample_mode": "true" if args.sample else "false",
+            "week_start": week_start.isoformat(),
+            "week_end": week_end.isoformat(),
+            "month_start": month_start.isoformat(),
+            "month_end": month_end.isoformat(),
+            "view_mode": "monthly_only" if month_only else "combined",
+            "count_mode": count_mode,
+            "has_weight_rules": "true" if config.mr_weight_rules else "false",
+        }
+
+        console_strategy = ConsoleOutputStrategy()
+        console_strategy.send(
+            week_header,
+            month_header,
+            weekly_stats,
+            monthly_stats,
+            sorted_weekly,
+            sorted_monthly,
+            motivational_message,
+            context,
+        )
+
+        teams_notifications_enabled = bool(config.ms_teams_webhook_url) and config.enable_teams_notifications
+        publish_debug = args.publish_teams_debug
+        should_send_to_teams = teams_notifications_enabled and args.publish_teams
+
+        if publish_debug or should_send_to_teams:
+            webhook_url = config.ms_teams_webhook_url if teams_notifications_enabled else ""
+            teams_strategy = TeamsOutputStrategy(webhook_url, debug_mode=publish_debug)
+            delivered = teams_strategy.send(
+                week_header,
+                month_header,
+                weekly_stats,
+                monthly_stats,
+                sorted_weekly,
+                sorted_monthly,
+                motivational_message,
+                context,
+            )
+            if delivered:
+                if publish_debug:
+                    print("\n🧪 Teams publish debug mode enabled; request body printed above.")
+                else:
+                    print("\n📤 Shared summary with Microsoft Teams.")
+            else:
+                print("\n⚠️ Unable to share summary with Microsoft Teams (see logs).")
+        elif config.ms_teams_webhook_url and not args.publish_teams:
+            print("\nℹ️ Teams notification not sent. Re-run with --publish-teams to share it.")
 
 
     except Exception as e:
