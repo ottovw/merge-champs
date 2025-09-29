@@ -174,6 +174,8 @@ output/
 
 # Generated charts (keep sample ones in docs if needed)
 !docs/sample_*.png
+!example.png
+
 
 # Environment variables (keep examples)
 .env.local

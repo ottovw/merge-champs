@@ -54,7 +54,7 @@ def main():
     parser.add_argument(
         '--week-offset',
         type=int,
-        default=0,
+        default=None,
         help='Number of weeks to look back (0 = current week). Ignored if --week is provided.'
     )
     parser.add_argument(
@@ -65,7 +65,7 @@ def main():
     parser.add_argument(
         '--month-offset',
         type=int,
-        default=0,
+        default=None,
         help='Number of months to look back (0 = current month). Ignored if --month is provided.'
     )
     parser.add_argument(
@@ -96,10 +96,12 @@ def main():
     try:
         # Determine reporting windows
         week_reference: Optional[datetime] = None
-        week_offset = args.week_offset if args.week_offset >= 0 else 0
-        if args.week_offset < 0:
+        week_offset_provided = args.week_offset is not None
+        week_offset = args.week_offset if week_offset_provided else 0
+        if week_offset < 0:
             logger.warning("Week offset cannot be negative; defaulting to 0")
-        if args.week and args.week_offset:
+            week_offset = 0
+        if args.week and week_offset_provided:
             logger.info("Ignoring --week-offset because --week was provided")
 
         if args.week:
@@ -111,10 +113,12 @@ def main():
             week_offset = 0
 
         month_reference: Optional[datetime] = None
-        month_offset = args.month_offset if args.month_offset >= 0 else 0
-        if args.month_offset < 0:
+        month_offset_provided = args.month_offset is not None
+        month_offset = args.month_offset if month_offset_provided else 0
+        if month_offset < 0:
             logger.warning("Month offset cannot be negative; defaulting to 0")
-        if args.month and args.month_offset:
+            month_offset = 0
+        if args.month and month_offset_provided:
             logger.info("Ignoring --month-offset because --month was provided")
 
         if args.month:
@@ -127,8 +131,8 @@ def main():
 
         week_start, week_end = get_week_date_range(offset_weeks=week_offset, reference=week_reference)
         month_start, month_end = get_month_date_range(offset_months=month_offset, reference=month_reference)
-        explicit_week = bool(args.week) or week_offset != 0
-        explicit_month = bool(args.month) or month_offset != 0
+        explicit_week = bool(args.week) or week_offset_provided
+        explicit_month = bool(args.month) or month_offset_provided
         month_only = explicit_month and not explicit_week
 
         count_mode = 'weighted' if args.weighted else 'raw'
@@ -168,7 +172,7 @@ def main():
                 print("2. Add your GitLab token and project/group information")
                 print("3. List your team members")
                 print("\nOr run with --sample to see a demonstration")
-                return
+                return 1
             
             print("🔄 Collecting merge request data...")
             if month_only:
@@ -235,8 +239,11 @@ def main():
         publish_debug = args.publish_teams_debug
         should_send_to_teams = teams_notifications_enabled and args.publish_teams
 
-        if publish_debug or should_send_to_teams:
+        if publish_debug or should_send_to_teams or args.publish_teams:
             webhook_url = config.ms_teams_webhook_url if teams_notifications_enabled else ""
+            if args.publish_teams and not teams_notifications_enabled:
+                raise RuntimeError("Teams publishing requested but webhook is not configured or notifications are disabled.")
+
             teams_strategy = TeamsOutputStrategy(webhook_url, debug_mode=publish_debug)
             delivered = teams_strategy.send(
                 week_header,
@@ -248,13 +255,17 @@ def main():
                 motivational_message,
                 context,
             )
-            if delivered:
-                if publish_debug:
+
+            if publish_debug:
+                if delivered:
                     print("\n🧪 Teams publish debug mode enabled; request body printed above.")
                 else:
+                    raise RuntimeError("Teams publish debug mode failed to generate payload.")
+            elif should_send_to_teams:
+                if delivered:
                     print("\n📤 Shared summary with Microsoft Teams.")
-            else:
-                print("\n⚠️ Unable to share summary with Microsoft Teams (see logs).")
+                else:
+                    raise RuntimeError("Failed to share summary with Microsoft Teams.")
         elif config.ms_teams_webhook_url and not args.publish_teams:
             print("\nℹ️ Teams notification not sent. Re-run with --publish-teams to share it.")
 
