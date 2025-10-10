@@ -4,6 +4,8 @@ Get Merge Request stats from Gitlab right from your Terminal. And publish to MS 
 
 ![Merge Champs](./example.png)
 
+Note: This project was fully vibe-coded with Github Co-Pilot. And manually retested.
+
 ## Setup
 
 ```bash
