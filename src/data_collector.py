@@ -60,10 +60,10 @@ class GitLabDataCollector:
             
         except requests.exceptions.RequestException as e:
             logger.error(f"Error fetching GitLab project data: {e}")
-            return []
+            raise RuntimeError(f"Failed to fetch merge requests from GitLab project {project_id}: {e}") from e
         except Exception as e:
             logger.error(f"Unexpected error: {e}")
-            return []
+            raise RuntimeError(f"Unexpected error fetching GitLab project data: {e}") from e
 
     def get_group_merge_requests(self, group_id: str, start_date: datetime, end_date: datetime) -> List[Dict[str, Any]]:
         """Fetch merge requests for all projects in a group within a date range using group-level API."""
@@ -131,10 +131,10 @@ class GitLabDataCollector:
             
         except requests.exceptions.RequestException as e:
             logger.error(f"Error fetching GitLab group data: {e}")
-            return []
+            raise RuntimeError(f"Failed to fetch merge requests from GitLab group {group_id}: {e}") from e
         except Exception as e:
             logger.error(f"Unexpected error: {e}")
-            return []
+            raise RuntimeError(f"Unexpected error fetching GitLab group data: {e}") from e
 
     def get_merge_request_changes_count(self, project_id: str, mr_iid: Any) -> Optional[int]:
         """Fetch additional statistics for a merge request to determine lines changed."""

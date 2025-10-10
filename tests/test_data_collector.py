@@ -179,6 +179,47 @@ class DataCollectorTests(unittest.TestCase):
         collector = DataCollector()
         self.assertTrue(collector.has_valid_configuration())
 
+    @patch("src.data_collector.requests.get")
+    def test_gitlab_project_api_failure_raises_error(self, mock_get) -> None:
+        """Test that GitLab project API failures raise exceptions instead of returning empty data."""
+        config.gitlab_token = "test-token"
+        config.project_id = "123"
+        config.group_id = ""
+        config.team_members = ["alice", "bob"]
+        config.mr_weight_rules = []
+
+        # Simulate an API failure
+        mock_get.side_effect = Exception("Network error")
+
+        collector = DataCollector()
+        
+        # Should raise RuntimeError instead of returning empty data
+        with self.assertRaises(RuntimeError) as context:
+            collector.get_weekly_data(reference=datetime(2025, 9, 26))
+        
+        self.assertIn("Unexpected error fetching GitLab project data", str(context.exception))
+
+    @patch("src.data_collector.requests.get")
+    def test_gitlab_group_api_failure_raises_error(self, mock_get) -> None:
+        """Test that GitLab group API failures raise exceptions instead of returning empty data."""
+        config.gitlab_token = "test-token"
+        config.project_id = ""
+        config.group_id = "456"
+        config.team_members = ["alice", "bob"]
+        config.mr_weight_rules = []
+
+        # Simulate an API failure
+        import requests
+        mock_get.side_effect = requests.exceptions.ConnectionError("Connection failed")
+
+        collector = DataCollector()
+        
+        # Should raise RuntimeError instead of returning empty data
+        with self.assertRaises(RuntimeError) as context:
+            collector.get_monthly_data(reference=datetime(2025, 9, 1))
+        
+        self.assertIn("Failed to fetch merge requests from GitLab group", str(context.exception))
+
 
 if __name__ == "__main__":
     unittest.main()
